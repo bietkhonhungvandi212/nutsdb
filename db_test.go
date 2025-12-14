@@ -2785,6 +2785,7 @@ func TestDB_WatchTTL(t *testing.T) {
 
 func TestDB_WatchDeleteBucket(t *testing.T) {
 	var err error
+	wg := sync.WaitGroup{}
 	t.Run("db watch and delete bucket", func(t *testing.T) {
 		runNutsDBTestWithWatch(t, func(t *testing.T, db *DB) {
 			bucket := "bucket"
@@ -2794,7 +2795,9 @@ func TestDB_WatchDeleteBucket(t *testing.T) {
 			count := atomic.Int64{}
 			expectCount := int64(2)
 
+			wg.Add(1)
 			go func() {
+				defer wg.Done()
 				err = db.Watch(bucket, key, func(msg *Message) error {
 					count.Add(1)
 					if count.Load() == expectCount {
@@ -2818,11 +2821,13 @@ func TestDB_WatchDeleteBucket(t *testing.T) {
 			}
 		})
 
+		wg.Wait()
 		require.NoError(t, err)
 	})
 
 	t.Run("db watch and delete bucket", func(t *testing.T) {
 		var err error
+		wg := sync.WaitGroup{}
 		runNutsDBTestWithWatch(t, func(t *testing.T, db *DB) {
 			bucket := "bucket"
 			txCreateBucket(t, db, DataStructureBTree, bucket, nil)
@@ -2831,7 +2836,9 @@ func TestDB_WatchDeleteBucket(t *testing.T) {
 			count := atomic.Int64{}
 			expectCount := int64(2)
 
+			wg.Add(1)
 			go func() {
+				defer wg.Done()
 				err = db.Watch(bucket, key, func(msg *Message) error {
 					count.Add(1)
 					if count.Load() == expectCount {
@@ -2854,33 +2861,41 @@ func TestDB_WatchDeleteBucket(t *testing.T) {
 			}
 		})
 
+		wg.Wait()
 		require.NoError(t, err)
 	})
 
 	t.Run("db watch many keys and delete bucket", func(t *testing.T) {
+		wg := sync.WaitGroup{}
+		errCh := make(chan error, 100)
+		countOfKeys := 100
+
 		runNutsDBTestWithWatch(t, func(t *testing.T, db *DB) {
 			bucket := "bucket"
 			txCreateBucket(t, db, DataStructureBTree, bucket, nil)
-			keys := make([][]byte, 100)
+			keys := make([][]byte, countOfKeys)
 			count := atomic.Int64{}
 			expectCount := int64(200)
 			done := make(chan struct{})
-			for i := 0; i < 100; i++ {
+			for i := 0; i < countOfKeys; i++ {
 				keys[i] = testutils.GetTestBytes(i)
 			}
 
 			for _, key := range keys {
+				wg.Add(1)
 				go func(key []byte, t *testing.T) {
+					defer wg.Done()
 					err := db.Watch(bucket, key, func(msg *Message) error {
-						assert.NotNil(t, msg)
-						assert.Equal(t, bucket, msg.BucketName)
+						require.NotNil(t, msg)
+						require.Equal(t, bucket, msg.BucketName)
 						count.Add(1)
 						if count.Load() == expectCount {
 							close(done)
 						}
 						return nil
 					})
-					require.NoError(t, err)
+
+					errCh <- err
 				}(key, t)
 			}
 
@@ -2898,14 +2913,20 @@ func TestDB_WatchDeleteBucket(t *testing.T) {
 				t.Fatal("Timeout waiting for message")
 			}
 		})
+
+		wg.Wait()
+		countErr := 0
+
+		for err := range errCh {
+			countErr++
+			require.NoError(t, err)
+			if countErr == countOfKeys {
+				break
+			}
+		}
 	})
 
 	t.Run("db watch different data structures and delete bucket", func(t *testing.T) {
-		var errBtreeWatch error
-		var errListWatch error
-		var errSetWatch error
-		var errZsetWatch error
-
 		runNutsDBTestWithWatch(t, func(t *testing.T, db *DB) {
 			// Create separate buckets for each data structure
 			btreeBucket := "btree_bucket"
@@ -2932,7 +2953,7 @@ func TestDB_WatchDeleteBucket(t *testing.T) {
 
 			// Watch BTree bucket
 			go func() {
-				errBtreeWatch = db.Watch(btreeBucket, btreeKey, func(msg *Message) error {
+				err := db.Watch(btreeBucket, btreeKey, func(msg *Message) error {
 					assert.NotNil(t, msg)
 					assert.Equal(t, core.BucketName(btreeBucket), msg.BucketName)
 					assert.Equal(t, string(btreeKey), msg.Key)
@@ -2942,11 +2963,13 @@ func TestDB_WatchDeleteBucket(t *testing.T) {
 					}
 					return nil
 				})
+
+				require.NoError(t, err)
 			}()
 
 			// Watch List bucket
 			go func() {
-				errListWatch = db.Watch(listBucket, listKey, func(msg *Message) error {
+				err := db.Watch(listBucket, listKey, func(msg *Message) error {
 					assert.NotNil(t, msg)
 					assert.Equal(t, core.BucketName(listBucket), msg.BucketName)
 					assert.Equal(t, string(listKey), msg.Key)
@@ -2956,11 +2979,13 @@ func TestDB_WatchDeleteBucket(t *testing.T) {
 					}
 					return nil
 				})
+
+				require.NoError(t, err)
 			}()
 
 			// Watch Set bucket
 			go func() {
-				errSetWatch = db.Watch(setBucket, setKey, func(msg *Message) error {
+				err := db.Watch(setBucket, setKey, func(msg *Message) error {
 					assert.NotNil(t, msg)
 					assert.Equal(t, core.BucketName(setBucket), msg.BucketName)
 					assert.Equal(t, string(setKey), msg.Key)
@@ -2970,11 +2995,13 @@ func TestDB_WatchDeleteBucket(t *testing.T) {
 					}
 					return nil
 				})
+
+				require.NoError(t, err)
 			}()
 
 			// Watch SortedSet bucket
 			go func() {
-				errZsetWatch = db.Watch(zsetBucket, zsetKey, func(msg *Message) error {
+				err := db.Watch(zsetBucket, zsetKey, func(msg *Message) error {
 					assert.NotNil(t, msg)
 					assert.Equal(t, core.BucketName(zsetBucket), msg.BucketName)
 					assert.Equal(t, string(zsetKey), msg.Key)
@@ -2984,6 +3011,8 @@ func TestDB_WatchDeleteBucket(t *testing.T) {
 					}
 					return nil
 				})
+
+				require.NoError(t, err)
 			}()
 
 			// Give watchers time to subscribe
@@ -3018,11 +3047,6 @@ func TestDB_WatchDeleteBucket(t *testing.T) {
 				t.Fatalf("Timeout waiting for messages. Received %d/%d messages", count.Load(), expectCount)
 			}
 		})
-
-		require.NoError(t, errBtreeWatch)
-		require.NoError(t, errListWatch)
-		require.NoError(t, errSetWatch)
-		require.NoError(t, errZsetWatch)
 	})
 
 	t.Run("db watch same bucket name across different data structures", func(t *testing.T) {
@@ -3058,7 +3082,7 @@ func TestDB_WatchDeleteBucket(t *testing.T) {
 			}
 
 			for _, ws := range watcherSetup {
-				go func(key []byte, name string, t *testing.T) {
+				go func(key []byte, name string) {
 					err := db.Watch(bucket, key, func(msg *Message) error {
 						assert.NotNil(t, msg)
 						assert.Equal(t, core.BucketName(bucket), msg.BucketName)
@@ -3069,7 +3093,7 @@ func TestDB_WatchDeleteBucket(t *testing.T) {
 						return nil
 					})
 					require.NoError(t, err)
-				}(ws.key, ws.name, t)
+				}(ws.key, ws.name)
 			}
 
 			time.Sleep(100 * time.Millisecond)
