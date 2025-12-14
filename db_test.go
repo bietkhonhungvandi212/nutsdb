@@ -2206,6 +2206,7 @@ func TestDB_Watch(t *testing.T) {
 	})
 
 	t.Run("db sorted set watch key and receive message", func(t *testing.T) {
+		var err error
 		runNutsDBTestWithWatch(t, func(t *testing.T, db *DB) {
 			bucket := "bucket"
 			txCreateBucket(t, db, DataStructureSortedSet, bucket, nil)
@@ -2217,7 +2218,7 @@ func TestDB_Watch(t *testing.T) {
 			done := make(chan struct{})
 
 			go func() {
-				err := db.Watch(bucket, key, func(msg *Message) error {
+				err = db.Watch(bucket, key, func(msg *Message) error {
 					assert.Equal(t, bucket, msg.BucketName)
 					assert.Equal(t, string(key), msg.Key)
 					if msg.Flag != DataZPopMinFlag && msg.Flag != DataZPopMaxFlag {
@@ -2231,10 +2232,6 @@ func TestDB_Watch(t *testing.T) {
 					return nil
 				})
 
-				if err != nil {
-					assert.ErrorIs(t, err, ErrWatchingChannelClosed)
-					return
-				}
 			}()
 
 			// wait for the watching to be started
@@ -2254,9 +2251,15 @@ func TestDB_Watch(t *testing.T) {
 				t.Fatal("Timeout waiting for message")
 			}
 		})
+
+		if err != nil {
+			require.ErrorIs(t, err, ErrWatchingChannelClosed)
+			return
+		}
 	})
 
 	t.Run("db set watch key and receive message", func(t *testing.T) {
+		var err error
 		runNutsDBTestWithWatch(t, func(t *testing.T, db *DB) {
 			bucket := "bucket"
 			txCreateBucket(t, db, DataStructureSet, bucket, nil)
@@ -2269,7 +2272,7 @@ func TestDB_Watch(t *testing.T) {
 			done := make(chan struct{})
 
 			go func() {
-				err := db.Watch(bucket, key, func(msg *Message) error {
+				err = db.Watch(bucket, key, func(msg *Message) error {
 					assert.Equal(t, bucket, msg.BucketName)
 					assert.Equal(t, string(key), msg.Key)
 					assert.NotNil(t, msg.Value)
@@ -2280,11 +2283,6 @@ func TestDB_Watch(t *testing.T) {
 					}
 					return nil
 				})
-
-				if err != nil {
-					assert.ErrorIs(t, err, ErrWatchingChannelClosed)
-					return
-				}
 			}()
 
 			// wait for the watching to be started
@@ -2306,6 +2304,11 @@ func TestDB_Watch(t *testing.T) {
 				t.Fatal("Timeout waiting for message")
 			}
 		})
+
+		if err != nil {
+			assert.ErrorIs(t, err, ErrWatchingChannelClosed)
+			return
+		}
 	})
 
 	t.Run("db watch and callback failed", func(t *testing.T) {
@@ -2464,6 +2467,7 @@ func TestDB_Watch(t *testing.T) {
 	})
 
 	t.Run("db watch and tx delete", func(t *testing.T) {
+		var err error
 		runNutsDBTestWithWatch(t, func(t *testing.T, db *DB) {
 			bucket := "bucket"
 			txCreateBucket(t, db, DataStructureBTree, bucket, nil)
@@ -2472,7 +2476,7 @@ func TestDB_Watch(t *testing.T) {
 			done := make(chan struct{})
 			go func() {
 				flag := DataSetFlag
-				err := db.Watch(bucket, key, func(msg *Message) error {
+				err = db.Watch(bucket, key, func(msg *Message) error {
 					assert.Equal(t, bucket, msg.BucketName)
 					assert.Equal(t, string(key), msg.Key)
 					assert.Equal(t, flag, msg.Flag)
@@ -2482,11 +2486,6 @@ func TestDB_Watch(t *testing.T) {
 					flag = DataDeleteFlag
 					return nil
 				})
-
-				if err != nil {
-					assert.ErrorIs(t, err, ErrWatchingChannelClosed)
-					return
-				}
 			}()
 
 			txPut(t, db, bucket, key, val, Persistent, nil, nil)
@@ -2500,9 +2499,15 @@ func TestDB_Watch(t *testing.T) {
 				t.Fatal("Timeout waiting for message")
 			}
 		})
+
+		if err != nil {
+			assert.ErrorIs(t, err, ErrWatchingChannelClosed)
+			return
+		}
 	})
 
 	t.Run("db watch and transaction rollback", func(t *testing.T) {
+		var err error
 		opts := DefaultOptions
 		opts.EnableWatch = true
 		opts.Dir = "/tmp/test-watch-and-transaction-rollback/"
@@ -2520,20 +2525,17 @@ func TestDB_Watch(t *testing.T) {
 		bucket := "bucket"
 		txCreateBucket(t, db, DataStructureBTree, bucket, nil)
 		key := testutils.GetTestBytes(0)
+		count := 0
 
 		wg := sync.WaitGroup{}
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			count := 0
-			err := db.Watch(bucket, key, func(msg *Message) error {
+			err = db.Watch(bucket, key, func(msg *Message) error {
 				count++
 				return nil
 			})
 
-			require.NoError(t, err)
-			require.Equal(t, count, 0, "all actions should be rolled back")
-			t.Log("watch callback should not be called due to rollback")
 		}()
 
 		time.Sleep(100 * time.Millisecond)
@@ -2560,6 +2562,10 @@ func TestDB_Watch(t *testing.T) {
 		require.NoError(t, errUpdate)
 		require.NoError(t, db.watchManager.close())
 		wg.Wait()
+
+		require.NoError(t, err)
+		require.Equal(t, count, 0, "all actions should be rolled back")
+		t.Log("watch callback should not be called due to rollback")
 	})
 
 	t.Run("db watch and txn exceed write limit", func(t *testing.T) {
@@ -2601,7 +2607,7 @@ func TestDB_Watch(t *testing.T) {
 
 			// Initialize the watcher for bucket2
 			for i := 0; i < int(limitCount); i++ {
-				go func(i int) {
+				go func(i int, t *testing.T) {
 					key := []byte(strconv.Itoa(i))
 					err := db.Watch(bucket1, key, func(msg *Message) error {
 						count.Add(1)
@@ -2612,10 +2618,10 @@ func TestDB_Watch(t *testing.T) {
 					})
 
 					require.NoError(t, err)
-				}(i)
+				}(i, t)
 			}
 
-			go func() {
+			go func(t *testing.T) {
 				err := db.Watch(bucket1, key1, func(msg *Message) error {
 					count.Add(1)
 					if count.Load() == countOfMessages {
@@ -2624,7 +2630,7 @@ func TestDB_Watch(t *testing.T) {
 					return nil
 				})
 				require.NoError(t, err)
-			}()
+			}(t)
 
 			keys := [][]byte{key1, key2}
 			for _, key := range keys {
@@ -2708,6 +2714,7 @@ func TestDB_Watch(t *testing.T) {
 
 func TestDB_WatchTTL(t *testing.T) {
 	t.Run("db watch and ttl", func(t *testing.T) {
+		var err error
 		runNutsDBTestWithWatch(t, func(t *testing.T, db *DB) {
 			bucket := "bucket"
 			txCreateBucket(t, db, DataStructureBTree, bucket, nil)
@@ -2717,14 +2724,13 @@ func TestDB_WatchTTL(t *testing.T) {
 			expectCount := int64(2)
 
 			go func() {
-				err := db.Watch(bucket, key, func(msg *Message) error {
+				err = db.Watch(bucket, key, func(msg *Message) error {
 					count.Add(1)
 					if count.Load() == expectCount {
 						close(done)
 					}
 					return nil
 				})
-				require.NoError(t, err)
 			}()
 
 			time.Sleep(100 * time.Millisecond)
@@ -2738,6 +2744,8 @@ func TestDB_WatchTTL(t *testing.T) {
 				t.Fatal("Timeout waiting for message")
 			}
 		})
+
+		require.NoError(t, err)
 	})
 
 	t.Run("db watch and ttl expired list", func(t *testing.T) {
@@ -2776,6 +2784,7 @@ func TestDB_WatchTTL(t *testing.T) {
 }
 
 func TestDB_WatchDeleteBucket(t *testing.T) {
+	var err error
 	t.Run("db watch and delete bucket", func(t *testing.T) {
 		runNutsDBTestWithWatch(t, func(t *testing.T, db *DB) {
 			bucket := "bucket"
@@ -2786,7 +2795,7 @@ func TestDB_WatchDeleteBucket(t *testing.T) {
 			expectCount := int64(2)
 
 			go func() {
-				err := db.Watch(bucket, key, func(msg *Message) error {
+				err = db.Watch(bucket, key, func(msg *Message) error {
 					count.Add(1)
 					if count.Load() == expectCount {
 						close(done)
@@ -2808,9 +2817,12 @@ func TestDB_WatchDeleteBucket(t *testing.T) {
 				t.Fatal("Timeout waiting for message")
 			}
 		})
+
+		require.NoError(t, err)
 	})
 
 	t.Run("db watch and delete bucket", func(t *testing.T) {
+		var err error
 		runNutsDBTestWithWatch(t, func(t *testing.T, db *DB) {
 			bucket := "bucket"
 			txCreateBucket(t, db, DataStructureBTree, bucket, nil)
@@ -2820,14 +2832,13 @@ func TestDB_WatchDeleteBucket(t *testing.T) {
 			expectCount := int64(2)
 
 			go func() {
-				err := db.Watch(bucket, key, func(msg *Message) error {
+				err = db.Watch(bucket, key, func(msg *Message) error {
 					count.Add(1)
 					if count.Load() == expectCount {
 						close(done)
 					}
 					return nil
 				})
-				require.NoError(t, err)
 			}()
 
 			time.Sleep(100 * time.Millisecond)
@@ -2842,6 +2853,8 @@ func TestDB_WatchDeleteBucket(t *testing.T) {
 				t.Fatal("Timeout waiting for message")
 			}
 		})
+
+		require.NoError(t, err)
 	})
 
 	t.Run("db watch many keys and delete bucket", func(t *testing.T) {
@@ -2857,7 +2870,7 @@ func TestDB_WatchDeleteBucket(t *testing.T) {
 			}
 
 			for _, key := range keys {
-				go func(key []byte) {
+				go func(key []byte, t *testing.T) {
 					err := db.Watch(bucket, key, func(msg *Message) error {
 						assert.NotNil(t, msg)
 						assert.Equal(t, bucket, msg.BucketName)
@@ -2868,7 +2881,7 @@ func TestDB_WatchDeleteBucket(t *testing.T) {
 						return nil
 					})
 					require.NoError(t, err)
-				}(key)
+				}(key, t)
 			}
 
 			for _, key := range keys {
@@ -2888,6 +2901,11 @@ func TestDB_WatchDeleteBucket(t *testing.T) {
 	})
 
 	t.Run("db watch different data structures and delete bucket", func(t *testing.T) {
+		var errBtreeWatch error
+		var errListWatch error
+		var errSetWatch error
+		var errZsetWatch error
+
 		runNutsDBTestWithWatch(t, func(t *testing.T, db *DB) {
 			// Create separate buckets for each data structure
 			btreeBucket := "btree_bucket"
@@ -2914,7 +2932,7 @@ func TestDB_WatchDeleteBucket(t *testing.T) {
 
 			// Watch BTree bucket
 			go func() {
-				err := db.Watch(btreeBucket, btreeKey, func(msg *Message) error {
+				errBtreeWatch = db.Watch(btreeBucket, btreeKey, func(msg *Message) error {
 					assert.NotNil(t, msg)
 					assert.Equal(t, core.BucketName(btreeBucket), msg.BucketName)
 					assert.Equal(t, string(btreeKey), msg.Key)
@@ -2924,12 +2942,11 @@ func TestDB_WatchDeleteBucket(t *testing.T) {
 					}
 					return nil
 				})
-				require.NoError(t, err)
 			}()
 
 			// Watch List bucket
 			go func() {
-				err := db.Watch(listBucket, listKey, func(msg *Message) error {
+				errListWatch = db.Watch(listBucket, listKey, func(msg *Message) error {
 					assert.NotNil(t, msg)
 					assert.Equal(t, core.BucketName(listBucket), msg.BucketName)
 					assert.Equal(t, string(listKey), msg.Key)
@@ -2939,12 +2956,11 @@ func TestDB_WatchDeleteBucket(t *testing.T) {
 					}
 					return nil
 				})
-				require.NoError(t, err)
 			}()
 
 			// Watch Set bucket
 			go func() {
-				err := db.Watch(setBucket, setKey, func(msg *Message) error {
+				errSetWatch = db.Watch(setBucket, setKey, func(msg *Message) error {
 					assert.NotNil(t, msg)
 					assert.Equal(t, core.BucketName(setBucket), msg.BucketName)
 					assert.Equal(t, string(setKey), msg.Key)
@@ -2954,12 +2970,11 @@ func TestDB_WatchDeleteBucket(t *testing.T) {
 					}
 					return nil
 				})
-				require.NoError(t, err)
 			}()
 
 			// Watch SortedSet bucket
 			go func() {
-				err := db.Watch(zsetBucket, zsetKey, func(msg *Message) error {
+				errZsetWatch = db.Watch(zsetBucket, zsetKey, func(msg *Message) error {
 					assert.NotNil(t, msg)
 					assert.Equal(t, core.BucketName(zsetBucket), msg.BucketName)
 					assert.Equal(t, string(zsetKey), msg.Key)
@@ -2969,7 +2984,6 @@ func TestDB_WatchDeleteBucket(t *testing.T) {
 					}
 					return nil
 				})
-				require.NoError(t, err)
 			}()
 
 			// Give watchers time to subscribe
@@ -3004,6 +3018,11 @@ func TestDB_WatchDeleteBucket(t *testing.T) {
 				t.Fatalf("Timeout waiting for messages. Received %d/%d messages", count.Load(), expectCount)
 			}
 		})
+
+		require.NoError(t, errBtreeWatch)
+		require.NoError(t, errListWatch)
+		require.NoError(t, errSetWatch)
+		require.NoError(t, errZsetWatch)
 	})
 
 	t.Run("db watch same bucket name across different data structures", func(t *testing.T) {
@@ -3039,7 +3058,7 @@ func TestDB_WatchDeleteBucket(t *testing.T) {
 			}
 
 			for _, ws := range watcherSetup {
-				go func(key []byte, name string) {
+				go func(key []byte, name string, t *testing.T) {
 					err := db.Watch(bucket, key, func(msg *Message) error {
 						assert.NotNil(t, msg)
 						assert.Equal(t, core.BucketName(bucket), msg.BucketName)
@@ -3050,7 +3069,7 @@ func TestDB_WatchDeleteBucket(t *testing.T) {
 						return nil
 					})
 					require.NoError(t, err)
-				}(ws.key, ws.name)
+				}(ws.key, ws.name, t)
 			}
 
 			time.Sleep(100 * time.Millisecond)
