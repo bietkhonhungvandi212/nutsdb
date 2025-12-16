@@ -15,6 +15,7 @@
 package nutsdb
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"math/rand"
@@ -61,7 +62,9 @@ func runNutsDBTest(t *testing.T, opts *Options, test func(t *testing.T, db *DB))
 	if opts.Dir == "" {
 		opts.Dir = filepath.Join(t.TempDir(), "nutsdb-test")
 	}
+
 	defer removeDir(opts.Dir)
+
 	db, err := Open(*opts)
 	require.NoError(t, err)
 
@@ -76,7 +79,16 @@ func runNutsDBTest(t *testing.T, opts *Options, test func(t *testing.T, db *DB))
 func runNutsDBTestWithWatch(t *testing.T, test func(t *testing.T, db *DB)) {
 	option := DefaultOptions
 	option.EnableWatch = true
-	runNutsDBTest(t, &option, test)
+
+	//actively close the watch manager, to cancel the watcher
+	testWithCloseWatchManager := func(t *testing.T, db *DB) {
+		test(t, db)
+		if !db.IsClose() && db.wm != nil && !db.wm.isClosed() {
+			require.NoError(t, db.wm.close())
+		}
+	}
+
+	runNutsDBTest(t, &option, testWithCloseWatchManager)
 }
 
 // runNutsDBTestWithMockClock runs a test with a MockClock for deterministic TTL testing.
@@ -2115,17 +2127,25 @@ func TestDB_Watch(t *testing.T) {
 			var err error
 			done := make(chan struct{})
 
-			go func() {
+			go func(t *testing.T) {
 				err = db.Watch(bucket, key0, func(msg *Message) error {
 					defer close(done)
 
-					assert.Equal(t, bucket, msg.BucketName)
-					assert.Equal(t, string(key0), msg.Key)
-					assert.Equal(t, val0, msg.Value)
+					if bucket != msg.BucketName {
+						return fmt.Errorf("bucket name is not equal")
+					}
+
+					if string(key0) != msg.Key {
+						return fmt.Errorf("key is not equal")
+					}
+
+					if !bytes.Equal(val0, msg.Value) {
+						return fmt.Errorf("value is not equal")
+					}
+
 					return nil
 				})
-
-			}()
+			}(t)
 
 			// Wait for the watching to be started
 			time.Sleep(100 * time.Millisecond)
@@ -2136,7 +2156,7 @@ func TestDB_Watch(t *testing.T) {
 			case <-done:
 				t.Log("Received message")
 				if err != nil {
-					assert.ErrorIs(t, err, ErrWatchingChannelClosed)
+					require.ErrorIs(t, err, ErrWatchingChannelClosed)
 					return
 				}
 			case <-time.After(10 * time.Second):
@@ -2147,6 +2167,7 @@ func TestDB_Watch(t *testing.T) {
 
 	t.Run("db list watch key and receive message", func(t *testing.T) {
 		var err error
+		wg := sync.WaitGroup{}
 		runNutsDBTestWithWatch(t, func(t *testing.T, db *DB) {
 			bucket := "bucket"
 			txCreateBucket(t, db, DataStructureList, bucket, nil)
@@ -2157,7 +2178,9 @@ func TestDB_Watch(t *testing.T) {
 
 			done := make(chan struct{})
 
+			wg.Add(1)
 			go func() {
+				defer wg.Done()
 				err = db.Watch(bucket, key0, func(msg *Message) error {
 					assert.Equal(t, bucket, msg.BucketName)
 					assert.Equal(t, string(key0), msg.Key)
@@ -2200,6 +2223,7 @@ func TestDB_Watch(t *testing.T) {
 			}
 		})
 
+		wg.Wait()
 		if err != nil {
 			require.ErrorIs(t, err, ErrWatchingChannelClosed)
 		}
@@ -2207,6 +2231,8 @@ func TestDB_Watch(t *testing.T) {
 
 	t.Run("db sorted set watch key and receive message", func(t *testing.T) {
 		var err error
+		wg := sync.WaitGroup{}
+
 		runNutsDBTestWithWatch(t, func(t *testing.T, db *DB) {
 			bucket := "bucket"
 			txCreateBucket(t, db, DataStructureSortedSet, bucket, nil)
@@ -2217,7 +2243,9 @@ func TestDB_Watch(t *testing.T) {
 			expectCount := 4
 			done := make(chan struct{})
 
+			wg.Add(1)
 			go func() {
+				defer wg.Done()
 				err = db.Watch(bucket, key, func(msg *Message) error {
 					assert.Equal(t, bucket, msg.BucketName)
 					assert.Equal(t, string(key), msg.Key)
@@ -2252,6 +2280,7 @@ func TestDB_Watch(t *testing.T) {
 			}
 		})
 
+		wg.Wait()
 		if err != nil {
 			require.ErrorIs(t, err, ErrWatchingChannelClosed)
 			return
@@ -2260,6 +2289,7 @@ func TestDB_Watch(t *testing.T) {
 
 	t.Run("db set watch key and receive message", func(t *testing.T) {
 		var err error
+		wg := sync.WaitGroup{}
 		runNutsDBTestWithWatch(t, func(t *testing.T, db *DB) {
 			bucket := "bucket"
 			txCreateBucket(t, db, DataStructureSet, bucket, nil)
@@ -2271,7 +2301,9 @@ func TestDB_Watch(t *testing.T) {
 			expectCount := 3
 			done := make(chan struct{})
 
+			wg.Add(1)
 			go func() {
+				defer wg.Done()
 				err = db.Watch(bucket, key, func(msg *Message) error {
 					assert.Equal(t, bucket, msg.BucketName)
 					assert.Equal(t, string(key), msg.Key)
@@ -2305,6 +2337,7 @@ func TestDB_Watch(t *testing.T) {
 			}
 		})
 
+		wg.Wait()
 		if err != nil {
 			assert.ErrorIs(t, err, ErrWatchingChannelClosed)
 			return
@@ -2468,18 +2501,23 @@ func TestDB_Watch(t *testing.T) {
 
 	t.Run("db watch and tx delete", func(t *testing.T) {
 		var err error
+		wg := sync.WaitGroup{}
+
 		runNutsDBTestWithWatch(t, func(t *testing.T, db *DB) {
 			bucket := "bucket"
 			txCreateBucket(t, db, DataStructureBTree, bucket, nil)
 			key := testutils.GetTestBytes(0)
 			val := testutils.GetTestBytes(0)
 			done := make(chan struct{})
+
+			wg.Add(1)
 			go func() {
+				defer wg.Done()
 				flag := DataSetFlag
 				err = db.Watch(bucket, key, func(msg *Message) error {
-					assert.Equal(t, bucket, msg.BucketName)
-					assert.Equal(t, string(key), msg.Key)
-					assert.Equal(t, flag, msg.Flag)
+					require.Equal(t, bucket, msg.BucketName)
+					require.Equal(t, string(key), msg.Key)
+					require.Equal(t, flag, msg.Flag)
 					if flag != DataSetFlag {
 						close(done)
 					}
@@ -2500,6 +2538,7 @@ func TestDB_Watch(t *testing.T) {
 			}
 		})
 
+		wg.Wait()
 		if err != nil {
 			assert.ErrorIs(t, err, ErrWatchingChannelClosed)
 			return
@@ -2715,6 +2754,8 @@ func TestDB_Watch(t *testing.T) {
 func TestDB_WatchTTL(t *testing.T) {
 	t.Run("db watch and ttl", func(t *testing.T) {
 		var err error
+		wg := sync.WaitGroup{}
+
 		runNutsDBTestWithWatch(t, func(t *testing.T, db *DB) {
 			bucket := "bucket"
 			txCreateBucket(t, db, DataStructureBTree, bucket, nil)
@@ -2723,7 +2764,9 @@ func TestDB_WatchTTL(t *testing.T) {
 			count := atomic.Int64{}
 			expectCount := int64(2)
 
+			wg.Add(1)
 			go func() {
+				defer wg.Done()
 				err = db.Watch(bucket, key, func(msg *Message) error {
 					count.Add(1)
 					if count.Load() == expectCount {
@@ -2745,6 +2788,7 @@ func TestDB_WatchTTL(t *testing.T) {
 			}
 		})
 
+		wg.Wait()
 		require.NoError(t, err)
 	})
 
@@ -2784,9 +2828,9 @@ func TestDB_WatchTTL(t *testing.T) {
 }
 
 func TestDB_WatchDeleteBucket(t *testing.T) {
-	var err error
-	wg := sync.WaitGroup{}
 	t.Run("db watch and delete bucket", func(t *testing.T) {
+		var err error
+		wg := sync.WaitGroup{}
 		runNutsDBTestWithWatch(t, func(t *testing.T, db *DB) {
 			bucket := "bucket"
 			txCreateBucket(t, db, DataStructureBTree, bucket, nil)
@@ -2883,11 +2927,17 @@ func TestDB_WatchDeleteBucket(t *testing.T) {
 
 			for _, key := range keys {
 				wg.Add(1)
-				go func(key []byte, t *testing.T) {
+				go func(key []byte) {
 					defer wg.Done()
 					err := db.Watch(bucket, key, func(msg *Message) error {
-						require.NotNil(t, msg)
-						require.Equal(t, bucket, msg.BucketName)
+						if msg == nil {
+							return fmt.Errorf("message is nil")
+						}
+
+						if msg.BucketName != bucket {
+							return fmt.Errorf("bucket name is not equal")
+						}
+
 						count.Add(1)
 						if count.Load() == expectCount {
 							close(done)
@@ -2896,7 +2946,7 @@ func TestDB_WatchDeleteBucket(t *testing.T) {
 					})
 
 					errCh <- err
-				}(key, t)
+				}(key)
 			}
 
 			for _, key := range keys {
