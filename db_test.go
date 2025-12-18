@@ -2650,7 +2650,7 @@ func TestDB_Watch(t *testing.T) {
 					key := []byte(strconv.Itoa(i))
 					err := db.Watch(bucket1, key, func(msg *Message) error {
 						count.Add(1)
-						if count.Load() == countOfMessages && done != nil {
+						if count.Load() == countOfMessages {
 							close(done)
 						}
 						return nil
@@ -2663,7 +2663,7 @@ func TestDB_Watch(t *testing.T) {
 			go func(t *testing.T) {
 				err := db.Watch(bucket1, key1, func(msg *Message) error {
 					count.Add(1)
-					if count.Load() == countOfMessages && done != nil {
+					if count.Load() == countOfMessages {
 						close(done)
 					}
 					return nil
@@ -2676,7 +2676,7 @@ func TestDB_Watch(t *testing.T) {
 				go func(key []byte) {
 					err := db.Watch(bucket2, key, func(msg *Message) error {
 						count.Add(1)
-						if count.Load() == countOfMessages && done != nil {
+						if count.Load() == countOfMessages {
 							close(done)
 						}
 						return nil
