@@ -2868,6 +2868,7 @@ func TestDB_WatchTTL(t *testing.T) {
 	// 		expectCount := int64(2)
 
 	// 		watchFunc, errWatch := db.Watch(context.Background(), bucket, key, func(msg *Message) error {
+	// 			log.Printf("received message: %+v", msg)
 	// 			count.Add(1)
 	// 			if count.Load() == expectCount {
 	// 				close(done)
@@ -2900,6 +2901,9 @@ func TestDB_WatchTTL(t *testing.T) {
 	// })
 
 	t.Run("db watch and ttl expired list", func(t *testing.T) {
+		var err error
+		wg := sync.WaitGroup{}
+
 		runNutsDBTestWithWatch(t, func(t *testing.T, db *DB) {
 			bucket := "bucket"
 			txCreateBucket(t, db, DataStructureList, bucket, nil)
@@ -2917,9 +2921,10 @@ func TestDB_WatchTTL(t *testing.T) {
 			})
 			require.NoError(t, errWatch)
 
+			wg.Add(1)
 			go func() {
-				//NOTE: make the chan of errors to test
-				watchFunc.Run()
+				defer wg.Done()
+				err = watchFunc.Run()
 			}()
 
 			errWait := watchFunc.WaitReady(10 * time.Second)
@@ -2935,6 +2940,9 @@ func TestDB_WatchTTL(t *testing.T) {
 				t.Fatal("Timeout waiting for message")
 			}
 		})
+
+		wg.Wait()
+		require.NoError(t, err)
 	})
 }
 
