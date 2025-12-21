@@ -329,3 +329,9 @@ func WithClock(clock clock.Clock) Option {
 		opt.Clock = clock
 	}
 }
+
+func WithEnableWatch(enable bool) Option {
+	return func(opt *Options) {
+		opt.EnableWatch = enable
+	}
+}
